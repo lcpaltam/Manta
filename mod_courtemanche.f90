@@ -28,7 +28,7 @@ module mod_courtemanche
   !.
   public  :: get_parameter_CRN , ic_Courte, Courtemanche_A_P01
   
-  private :: put_param, f_currents, f_gates, f_concentrations
+  private :: put_param, f_currents, f_gates, f_concentrations, safe_exp
   !.
   type, public:: t_prm
     private
@@ -51,6 +51,16 @@ module mod_courtemanche
 !  &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&  !
 !------------------------------------------------------------------------------!
 contains
+!------------------------------------------------------------------------------!
+pure real(rp) function safe_exp(x)
+!------------------------------------------------------------------------------!
+  implicit none
+  real(rp), intent(in) :: x
+  real(rp), parameter  :: EXP_ARG_MAX = 80.0_rp
+
+  safe_exp = exp(max(-EXP_ARG_MAX, min(EXP_ARG_MAX, x)))
+end function safe_exp
+!------------------------------------------------------------------------------!
 !------------------------------------------------------------------------------!
 subroutine write_state_Courte(lu_st)
 implicit none
@@ -630,6 +640,16 @@ subroutine f_gates(dt, Vm, cur, cm_m)
   real(rp) :: dDpIC3,dDpIC2,dDpIF,dDpC3,dDpC2,dDpC1,dDpO,dDpIS,dDpIT
   real(rp) :: dDIC3,dDIC2,dDIF,dDC3,dDC2,dDC1,dDO,dDIS,dDIT
 
+  ! Estados previos para actualización semi-implícita
+  real(rp) :: oIC3,oIC2,oIF,oC3,oC2,oC1,oO,oIS
+  real(rp) :: oDpIC3,oDpIC2,oDpIF,oDpC3,oDpC2,oDpC1,oDpO,oDpIS,oDpIT
+  real(rp) :: oDIC3,oDIC2,oDIF,oDC3,oDC2,oDC1,oDO,oDIS,oDIT
+
+  ! Términos de pérdida lineal (dX = P - L*X)
+  real(rp) :: lIC3,lIC2,lIF,lC3,lC2,lC1,lO,lIS
+  real(rp) :: lDpIC3,lDpIC2,lDpIF,lDpC3,lDpC2,lDpC1,lDpO,lDpIS,lDpIT
+  real(rp) :: lDIC3,lDIC2,lDIF,lDC3,lDC2,lDC1,lDO,lDIS,lDIT
+
   ! Sub-stepping
   integer(ip) :: k_sub, n_sub
   real(rp)    :: dt_sub
@@ -830,19 +850,19 @@ subroutine f_gates(dt, Vm, cur, cm_m)
 
   Tfactor = 1.0_rp/(3.0_rp**((37.0_rp-(p_T-273.0_rp))/10.0_rp))
 
-  a11 = Tfactor*p1/(p2*exp(-(Vm-actshift)/p3) + p6*exp(-(Vm-actshift)/p7))
-  a12 = Tfactor*p1/(p2*exp(-(Vm-actshift)/p4) + p6*exp(-(Vm-actshift)/p7))
-  a13 = Tfactor*p1/(p2*exp(-(Vm-actshift)/p5) + p6*exp(-(Vm-actshift)/p7))
-  b11 = Tfactor*p8 * exp(-(Vm-actshift)/p9)
-  b12 = Tfactor*p10* exp(-(Vm-actshift-p11)/p9)
-  b13 = Tfactor*p12* exp(-(Vm-actshift-p13)/p9)
+  a11 = Tfactor*p1/(p2*safe_exp(-(Vm-actshift)/p3) + p6*safe_exp(-(Vm-actshift)/p7))
+  a12 = Tfactor*p1/(p2*safe_exp(-(Vm-actshift)/p4) + p6*safe_exp(-(Vm-actshift)/p7))
+  a13 = Tfactor*p1/(p2*safe_exp(-(Vm-actshift)/p5) + p6*safe_exp(-(Vm-actshift)/p7))
+  b11 = Tfactor*p8 * safe_exp(-(Vm-actshift)/p9)
+  b12 = Tfactor*p10* safe_exp(-(Vm-actshift-p11)/p9)
+  b13 = Tfactor*p12* safe_exp(-(Vm-actshift-p13)/p9)
 
-  a3_ss = 1.0_rp/(1.0_rp+exp((Vm-p14_new)/p15_new))
-  a3_tau= h1 + p01*exp(p16_new*(Vm-p14_new))/(1.0_rp+exp(p17_new*(Vm-p14_new)))
+  a3_ss = 1.0_rp/(1.0_rp+safe_exp((Vm-p14_new)/p15_new))
+  a3_tau= h1 + p01*safe_exp(p16_new*(Vm-p14_new))/(1.0_rp+safe_exp(p17_new*(Vm-p14_new)))
   a3    = Tfactor*a3_ss/a3_tau
   b3    = Tfactor*(1.0_rp-a3_ss)/a3_tau
 
-  a2 = Tfactor*p18*exp(Vm/p19)
+  a2 = Tfactor*p18*safe_exp(Vm/p19)
   b2 = (a13*a2*a3)/(b13*b3)
   ax = p20*a2
   bx = p21*a3
@@ -915,126 +935,155 @@ subroutine f_gates(dt, Vm, cur, cm_m)
                          a22,a_22,b22,b_22, a33,b33,a_33,b_33, a44,b44,a_44,b_44, &
                          kon,koff,k_on,k_off, ki_on,ki_off,kc_on,kc_off, kcon,kcoff /) )
     if (max_rate < 1.0_rp) max_rate = 1.0_rp
-    n_sub = int(ceiling((dt*max_rate)/0.05_rp), kind=ip)
-    if (n_sub < 10_ip) n_sub = 10_ip
-    if (n_sub > 20000_ip) n_sub = 20000_ip
+    n_sub = int(ceiling((dt*max_rate)/0.10_rp), kind=ip)
+    if (n_sub < 6_ip) n_sub = 6_ip
+    if (n_sub > 4000_ip) n_sub = 4000_ip
   end if
   dt_sub = dt/real(n_sub,rp)
+  if (dt_sub <= 0.0_rp) dt_sub = dt
 
   do k_sub = 1, n_sub
 
+    ! Estados previos del substep (esquema semi-implícito diagonal)
+    oIC3   = cm_m%xnIC3  ; oIC2   = cm_m%xnIC2  ; oIF    = cm_m%xnIF
+    oC3    = cm_m%xnC3   ; oC2    = cm_m%xnC2   ; oC1    = cm_m%xnC1
+    oO     = cm_m%xnO    ; oIS    = cm_m%xnIS
+
+    oDpIC3 = cm_m%xnDpIC3; oDpIC2 = cm_m%xnDpIC2; oDpIF  = cm_m%xnDpIF
+    oDpC3  = cm_m%xnDpC3 ; oDpC2  = cm_m%xnDpC2 ; oDpC1  = cm_m%xnDpC1
+    oDpO   = cm_m%xnDpO  ; oDpIS  = cm_m%xnDpIS ; oDpIT  = cm_m%xnDpIT
+
+    oDIC3  = cm_m%xnDIC3 ; oDIC2  = cm_m%xnDIC2 ; oDIF   = cm_m%xnDIF
+    oDC3   = cm_m%xnDC3  ; oDC2   = cm_m%xnDC2  ; oDC1   = cm_m%xnDC1
+    oDO    = cm_m%xnDO   ; oDIS   = cm_m%xnDIS  ; oDIT   = cm_m%xnDIT
+
     ! ======= Bloque nativo xn* =======
-    dIC3 = -cm_m%xnIC3*(a11 + a3 + ki_on) + &
-            cm_m%xnIC2*b11 + cm_m%xnC3*b3 + ki_off*cm_m%xnDIC3
+    dIC3 = oIC2*b11 + oC3*b3 + ki_off*oDIC3
+    lIC3 = a11 + a3 + ki_on
 
-    dIC2 = -cm_m%xnIC2*(b11 + a3 + a12 + ki_on) + &
-            cm_m%xnIC3*a11 + cm_m%xnIF*b12 + cm_m%xnC2*b3 + ki_off*cm_m%xnDIC2
+    dIC2 = oIC3*a11 + oIF*b12 + oC2*b3 + ki_off*oDIC2
+    lIC2 = b11 + a3 + a12 + ki_on
 
-    dIF  = -cm_m%xnIF*(b12 + a3 + b2 + ki_on) + &
-            cm_m%xnIC2*a12 + cm_m%xnC1*b3 + cm_m%xnO*a2 + ki_off*cm_m%xnDIF
+    dIF  = oIC2*a12 + oC1*b3 + oO*a2 + ki_off*oDIF
+    lIF  = b12 + a3 + b2 + ki_on
 
-    dC3  = -cm_m%xnC3*(b3 + a11 + kcon + kc_on) + &
-            cm_m%xnIC3*a3 + cm_m%xnC2*b11 + cm_m%xnDpC3*kcoff + cm_m%xnDC3*kc_off
+    dC3  = oIC3*a3 + oC2*b11 + oDpC3*kcoff + oDC3*kc_off
+    lC3  = b3 + a11 + kcon + kc_on
 
-    dC2  = -cm_m%xnC2*(b11 + b3 + a12 + kcon + kc_on) + &
-            cm_m%xnC3*a11 + cm_m%xnIC2*a3 + cm_m%xnC1*b12 + cm_m%xnDpC2*kcoff + cm_m%xnDC2*kc_off
+    dC2  = oC3*a11 + oIC2*a3 + oC1*b12 + oDpC2*kcoff + oDC2*kc_off
+    lC2  = b11 + b3 + a12 + kcon + kc_on
 
-    dC1  = -cm_m%xnC1*(b12 + b3 + a13 + kcon + kc_on) + &
-            cm_m%xnC2*a12 + cm_m%xnIF*a3 + cm_m%xnO*b13 + cm_m%xnDpC1*kcoff + cm_m%xnDC1*kc_off
+    dC1  = oC2*a12 + oIF*a3 + oO*b13 + oDpC1*kcoff + oDC1*kc_off
+    lC1  = b12 + b3 + a13 + kcon + kc_on
 
-    dO_mkv   = -cm_m%xnO*(b13 + a2 + ax + kon + k_on) + &
-            cm_m%xnC1*a13 + cm_m%xnIF*b2 + cm_m%xnIS*bx + cm_m%xnDpO*koff + cm_m%xnDO*k_off
+    dO_mkv = oC1*a13 + oIF*b2 + oIS*bx + oDpO*koff + oDO*k_off
+    lO    = b13 + a2 + ax + kon + k_on
 
-    dIS  = -cm_m%xnIS*(bx + ki_on) + &
-            cm_m%xnO*ax + cm_m%xnDIS*ki_off
+    dIS  = oO*ax + oDIS*ki_off
+    lIS  = bx + ki_on
 
     ! ======= Bloque Dp* (drogado atrapado) =======
-    dDpIC3 = -cm_m%xnDpIC3*(a33 + a11) + &
-              cm_m%xnDpIC2*b11 + cm_m%xnDpC3*b33
+    dDpIC3 = oDpIC2*b11 + oDpC3*b33
+    lDpIC3 = a33 + a11
 
-    dDpIC2 = -cm_m%xnDpIC2*(b11 + a33 + a12) + &
-              cm_m%xnDpIC3*a11 + cm_m%xnDpIF*b12 + cm_m%xnDpC2*b33
+    dDpIC2 = oDpIC3*a11 + oDpIF*b12 + oDpC2*b33
+    lDpIC2 = b11 + a33 + a12
 
-    dDpIF  = -cm_m%xnDpIF*(b12 + a33 + b22 + a44) + &
-              cm_m%xnDpIC2*a12 + cm_m%xnDpC1*b33 + cm_m%xnDpO*a22 + cm_m%xnDpIT*b44
+    dDpIF  = oDpIC2*a12 + oDpC1*b33 + oDpO*a22 + oDpIT*b44
+    lDpIF  = b12 + a33 + b22 + a44
 
-    dDpC3  = -cm_m%xnDpC3*(b33 + a11 + kcoff) + &
-              cm_m%xnDpIC3*a33 + cm_m%xnDpC2*b11 + cm_m%xnC3*kcon
+    dDpC3  = oDpIC3*a33 + oDpC2*b11 + oC3*kcon
+    lDpC3  = b33 + a11 + kcoff
 
-    dDpC2  = -cm_m%xnDpC2*(b11 + b33 + a12 + kcoff) + &
-              cm_m%xnDpC3*a11 + cm_m%xnDpIC2*a33 + cm_m%xnDpC1*b12 + cm_m%xnC2*kcon
+    dDpC2  = oDpC3*a11 + oDpIC2*a33 + oDpC1*b12 + oC2*kcon
+    lDpC2  = b11 + b33 + a12 + kcoff
 
-    dDpC1  = -cm_m%xnDpC1*(b12 + b33 + a13c + kcoff) + &
-              cm_m%xnDpC2*a12 + cm_m%xnDpIF*a33 + cm_m%xnDpO*b13c + cm_m%xnC1*kcon
+    dDpC1  = oDpC2*a12 + oDpIF*a33 + oDpO*b13c + oC1*kcon
+    lDpC1  = b12 + b33 + a13c + kcoff
 
-    dDpO   = -cm_m%xnDpO*(b13c + a22 + ax1 + koff) + &
-              cm_m%xnDpC1*a13c + cm_m%xnDpIF*b22 + cm_m%xnDpIS*bx1 + cm_m%xnO*kon
+    dDpO   = oDpC1*a13c + oDpIF*b22 + oDpIS*bx1 + oO*kon
+    lDpO   = b13c + a22 + ax1 + koff
 
-    dDpIS  = -cm_m%xnDpIS*bx1 + &
-              cm_m%xnDpO*ax1
+    dDpIS  = oDpO*ax1
+    lDpIS  = bx1
 
-    dDpIT  = -cm_m%xnDpIT*b44 + &
-              cm_m%xnDpIF*a44
+    dDpIT  = oDpIF*a44
+    lDpIT  = b44
 
-    ! ======= Bloque D* (drogado rpido) =======
-    dDIC3 = -cm_m%xnDIC3*(a_33 + a11 + ki_off) + &
-             cm_m%xnDIC2*b11 + cm_m%xnDC3*b_33 + ki_on*cm_m%xnIC3
+    ! ======= Bloque D* (drogado rápido) =======
+    dDIC3 = oDIC2*b11 + oDC3*b_33 + ki_on*oIC3
+    lDIC3 = a_33 + a11 + ki_off
 
-    dDIC2 = -cm_m%xnDIC2*(b11 + a_33 + a12 + ki_off) + &
-             cm_m%xnDIC3*a11 + cm_m%xnDIF*b12 + cm_m%xnDC2*b_33 + ki_on*cm_m%xnIC2
+    dDIC2 = oDIC3*a11 + oDIF*b12 + oDC2*b_33 + ki_on*oIC2
+    lDIC2 = b11 + a_33 + a12 + ki_off
 
-    dDIF  = -cm_m%xnDIF*(b12 + a_33 + b_22 + a_44 + ki_off) + &
-             cm_m%xnDIC2*a12 + cm_m%xnDC1*b_33 + cm_m%xnDO*a_22 + cm_m%xnDIT*b_44 + ki_on*cm_m%xnIF
+    dDIF  = oDIC2*a12 + oDC1*b_33 + oDO*a_22 + oDIT*b_44 + ki_on*oIF
+    lDIF  = b12 + a_33 + b_22 + a_44 + ki_off
 
-    dDC3  = -cm_m%xnDC3*(b_33 + a11 + kc_off) + &
-             cm_m%xnDIC3*a_33 + cm_m%xnDC2*b11 + cm_m%xnC3*kc_on
+    dDC3  = oDIC3*a_33 + oDC2*b11 + oC3*kc_on
+    lDC3  = b_33 + a11 + kc_off
 
-    dDC2  = -cm_m%xnDC2*(b11 + b_33 + a12 + kc_off) + &
-             cm_m%xnDC3*a11 + cm_m%xnDIC2*a_33 + cm_m%xnDC1*b12 + cm_m%xnC2*kc_on
+    dDC2  = oDC3*a11 + oDIC2*a_33 + oDC1*b12 + oC2*kc_on
+    lDC2  = b11 + b_33 + a12 + kc_off
 
-    dDC1  = -cm_m%xnDC1*(b12 + b_33 + a13n + kc_off) + &
-             cm_m%xnDC2*a12 + cm_m%xnDIF*a_33 + cm_m%xnDO*b13n + cm_m%xnC1*kc_on
+    dDC1  = oDC2*a12 + oDIF*a_33 + oDO*b13n + oC1*kc_on
+    lDC1  = b12 + b_33 + a13n + kc_off
 
-    dDO   = -cm_m%xnDO*(b13n + a_22 + ax2 + k_off) + &
-             cm_m%xnDC1*a13n + cm_m%xnDIF*b_22 + cm_m%xnDIS*bx2 + cm_m%xnO*k_on
+    dDO   = oDC1*a13n + oDIF*b_22 + oDIS*bx2 + oO*k_on
+    lDO   = b13n + a_22 + ax2 + k_off
 
-    dDIS  = -cm_m%xnDIS*(bx2 + ki_off) + &
-             cm_m%xnDO*ax2 + cm_m%xnIS*ki_on
+    dDIS  = oDO*ax2 + oIS*ki_on
+    lDIS  = bx2 + ki_off
 
-    dDIT  = -cm_m%xnDIT*b_44 + &
-             cm_m%xnDIF*a_44
+    dDIT  = oDIF*a_44
+    lDIT  = b_44
 
-    ! Actualizar por Euler explcito en dt_sub
-    cm_m%xnIC3   = cm_m%xnIC3   + dt_sub*dIC3
-    cm_m%xnIC2   = cm_m%xnIC2   + dt_sub*dIC2
-    cm_m%xnIF    = cm_m%xnIF    + dt_sub*dIF
-    cm_m%xnC3    = cm_m%xnC3    + dt_sub*dC3
-    cm_m%xnC2    = cm_m%xnC2    + dt_sub*dC2
-    cm_m%xnC1    = cm_m%xnC1    + dt_sub*dC1
-    cm_m%xnO     = cm_m%xnO     + dt_sub*dO_mkv
-    cm_m%xnIS    = cm_m%xnIS    + dt_sub*dIS
+    ! Actualización semi-implícita: X_{n+1} = (X_n + dt*P_n)/(1 + dt*L_n)
+    cm_m%xnIC3   = (oIC3   + dt_sub*dIC3)   /(1.0_rp + dt_sub*lIC3)
+    cm_m%xnIC2   = (oIC2   + dt_sub*dIC2)   /(1.0_rp + dt_sub*lIC2)
+    cm_m%xnIF    = (oIF    + dt_sub*dIF)    /(1.0_rp + dt_sub*lIF)
+    cm_m%xnC3    = (oC3    + dt_sub*dC3)    /(1.0_rp + dt_sub*lC3)
+    cm_m%xnC2    = (oC2    + dt_sub*dC2)    /(1.0_rp + dt_sub*lC2)
+    cm_m%xnC1    = (oC1    + dt_sub*dC1)    /(1.0_rp + dt_sub*lC1)
+    cm_m%xnO     = (oO     + dt_sub*dO_mkv) /(1.0_rp + dt_sub*lO)
+    cm_m%xnIS    = (oIS    + dt_sub*dIS)    /(1.0_rp + dt_sub*lIS)
 
-    cm_m%xnDpIC3 = cm_m%xnDpIC3 + dt_sub*dDpIC3
-    cm_m%xnDpIC2 = cm_m%xnDpIC2 + dt_sub*dDpIC2
-    cm_m%xnDpIF  = cm_m%xnDpIF  + dt_sub*dDpIF
-    cm_m%xnDpC3  = cm_m%xnDpC3  + dt_sub*dDpC3
-    cm_m%xnDpC2  = cm_m%xnDpC2  + dt_sub*dDpC2
-    cm_m%xnDpC1  = cm_m%xnDpC1  + dt_sub*dDpC1
-    cm_m%xnDpO   = cm_m%xnDpO   + dt_sub*dDpO
-    cm_m%xnDpIS  = cm_m%xnDpIS  + dt_sub*dDpIS
-    cm_m%xnDpIT  = cm_m%xnDpIT  + dt_sub*dDpIT
+    cm_m%xnDpIC3 = (oDpIC3 + dt_sub*dDpIC3) /(1.0_rp + dt_sub*lDpIC3)
+    cm_m%xnDpIC2 = (oDpIC2 + dt_sub*dDpIC2) /(1.0_rp + dt_sub*lDpIC2)
+    cm_m%xnDpIF  = (oDpIF  + dt_sub*dDpIF)  /(1.0_rp + dt_sub*lDpIF)
+    cm_m%xnDpC3  = (oDpC3  + dt_sub*dDpC3)  /(1.0_rp + dt_sub*lDpC3)
+    cm_m%xnDpC2  = (oDpC2  + dt_sub*dDpC2)  /(1.0_rp + dt_sub*lDpC2)
+    cm_m%xnDpC1  = (oDpC1  + dt_sub*dDpC1)  /(1.0_rp + dt_sub*lDpC1)
+    cm_m%xnDpO   = (oDpO   + dt_sub*dDpO)   /(1.0_rp + dt_sub*lDpO)
+    cm_m%xnDpIS  = (oDpIS  + dt_sub*dDpIS)  /(1.0_rp + dt_sub*lDpIS)
+    cm_m%xnDpIT  = (oDpIT  + dt_sub*dDpIT)  /(1.0_rp + dt_sub*lDpIT)
 
-    cm_m%xnDIC3  = cm_m%xnDIC3  + dt_sub*dDIC3
-    cm_m%xnDIC2  = cm_m%xnDIC2  + dt_sub*dDIC2
-    cm_m%xnDIF   = cm_m%xnDIF   + dt_sub*dDIF
-    cm_m%xnDC3   = cm_m%xnDC3   + dt_sub*dDC3
-    cm_m%xnDC2   = cm_m%xnDC2   + dt_sub*dDC2
-    cm_m%xnDC1   = cm_m%xnDC1   + dt_sub*dDC1
-    cm_m%xnDO    = cm_m%xnDO    + dt_sub*dDO
-    cm_m%xnDIS   = cm_m%xnDIS   + dt_sub*dDIS
-    cm_m%xnDIT   = cm_m%xnDIT   + dt_sub*dDIT
+    cm_m%xnDIC3  = (oDIC3  + dt_sub*dDIC3)  /(1.0_rp + dt_sub*lDIC3)
+    cm_m%xnDIC2  = (oDIC2  + dt_sub*dDIC2)  /(1.0_rp + dt_sub*lDIC2)
+    cm_m%xnDIF   = (oDIF   + dt_sub*dDIF)   /(1.0_rp + dt_sub*lDIF)
+    cm_m%xnDC3   = (oDC3   + dt_sub*dDC3)   /(1.0_rp + dt_sub*lDC3)
+    cm_m%xnDC2   = (oDC2   + dt_sub*dDC2)   /(1.0_rp + dt_sub*lDC2)
+    cm_m%xnDC1   = (oDC1   + dt_sub*dDC1)   /(1.0_rp + dt_sub*lDC1)
+    cm_m%xnDO    = (oDO    + dt_sub*dDO)    /(1.0_rp + dt_sub*lDO)
+    cm_m%xnDIS   = (oDIS   + dt_sub*dDIS)   /(1.0_rp + dt_sub*lDIS)
+    cm_m%xnDIT   = (oDIT   + dt_sub*dDIT)   /(1.0_rp + dt_sub*lDIT)
 
   end do  ! k_sub
+
+  if (.not.((cm_m%xnO == cm_m%xnO) .and. (cm_m%xnC1 == cm_m%xnC1) .and. (cm_m%xnIC3 == cm_m%xnIC3))) then
+    cm_m%xnC3    = 1.0_rp
+    cm_m%xnIC3   = 0.0_rp; cm_m%xnIC2 = 0.0_rp; cm_m%xnIF  = 0.0_rp
+    cm_m%xnC2    = 0.0_rp; cm_m%xnC1  = 0.0_rp
+    cm_m%xnO     = 0.0_rp; cm_m%xnIS  = 0.0_rp
+
+    cm_m%xnDpIC3 = 0.0_rp; cm_m%xnDpIC2=0.0_rp; cm_m%xnDpIF =0.0_rp
+    cm_m%xnDpC3  = 0.0_rp; cm_m%xnDpC2 =0.0_rp; cm_m%xnDpC1 =0.0_rp
+    cm_m%xnDpO   = 0.0_rp; cm_m%xnDpIS =0.0_rp; cm_m%xnDpIT =0.0_rp
+
+    cm_m%xnDIC3  = 0.0_rp; cm_m%xnDIC2=0.0_rp; cm_m%xnDIF  =0.0_rp
+    cm_m%xnDC3   = 0.0_rp; cm_m%xnDC2 =0.0_rp; cm_m%xnDC1  =0.0_rp
+    cm_m%xnDO    = 0.0_rp; cm_m%xnDIS =0.0_rp; cm_m%xnDIT  =0.0_rp
+  end if
 
   ! -------------------------------------------------------------------------
   ! Clamping y normalizacin a suma = 1
